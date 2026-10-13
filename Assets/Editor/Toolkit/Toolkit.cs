@@ -87,10 +87,11 @@ public class Toolkit : EditorWindow
         string boxTitle = compName == "WindowPrintShot" ? "📸 Window Print Shot" :
           compName == "ScriptGenerator" ? "🔨 Script Generator" :
           compName == "AssetLauncher" ? "🚀 Asset Launcher" :
-          compName == "ToolkitScriptFinder" ? "🔍 Script Finder" :
+          compName == "Lookup" ? "🔎 Lookup" :
           compName == "TimeScale" ? "⏱ Time Scale" :
           compName == "TextManager" ? "🔤 UI Text Manager" :
-          compName == "ObjectTracker" ? "📈 Object Tracker" : "🔍 Attached Script Checker";
+          compName == "SOManager" ? "🗃 SO Manager" :
+          compName == "ObjectTracker" ? "📈 Object Tracker" : compName;
         GUIStyle boxStyle = new GUIStyle(EditorStyles.helpBox);
         if (draggingIndex == index)
         {
@@ -153,7 +154,7 @@ public class Toolkit : EditorWindow
             Rect labelRect = new Rect(headerRect.x + 5f, headerRect.y + 2f, Mathf.Max(50f, validWidth - 155f), headerRect.height);
             GUI.Label(labelRect, $"☰  {boxTitle}", EditorStyles.miniBoldLabel);
 
-            if (compName == "AttachedScriptChecker")
+            if (compName == "AttachedScriptChecker" || (compName == "Lookup" && ToolkitLookup.mode == 0))
             {
                 bool isLocked = ToolkitScriptChecker.IsLocked(index);
                 bool nextLock = GUI.Toggle(new Rect(btnStartX, headerRect.y + 2f, 65f, 16f), isLocked, isLocked ? "🔒 Locked" : "🔓 Lock", EditorStyles.miniButton);
@@ -179,11 +180,11 @@ public class Toolkit : EditorWindow
             if (compName == "WindowPrintShot") ToolkitPrintShot.DrawMenu(this);
             else if (compName == "ScriptGenerator") ToolkitScriptGenerator.DrawMenu();
             else if (compName == "AssetLauncher") ToolkitAssetLauncher.DrawMenu(index, this);
-            else if (compName == "AttachedScriptChecker") ToolkitScriptChecker.DrawMenu(index, this);
             else if (compName == "TimeScale") ToolkitTimeScale.DrawMenu();
             else if (compName == "TextManager") ToolkitTextManager.DrawMenu();
             else if (compName == "ObjectTracker") ToolkitObjectTracker.DrawMenu();
-            else if (compName == "ToolkitScriptFinder") ToolkitScriptFinder.DrawMenu();   // ← 追加
+            else if (compName == "Lookup") ToolkitLookup.DrawMenu(index, this);
+            else if (compName == "SOManager") ToolkitSOManager.DrawMenu();
             GUILayout.Space(5);
         }
         EditorGUILayout.EndVertical();

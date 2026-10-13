@@ -5,6 +5,9 @@
 /[Bb]uilds/
 /[Ll]ogs/
 /[Uu]ser[Ss]ettings/
+/Packages/nuget-packages/InstalledPackages*
+Assets/Editor/WindowSnapshots/
+Assets/Editor/WindowSnapshots.meta
 
 # Visual Studio / VS Code の一時ファイル
 .vs/
