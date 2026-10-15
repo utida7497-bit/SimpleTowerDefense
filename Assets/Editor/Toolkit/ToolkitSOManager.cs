@@ -9,6 +9,17 @@ using System.Text.RegularExpressions;
 
 public static class ToolkitSOManager
 {
+    private class EnumMember
+    {
+        public string name;
+        public long value;
+        public bool isNew;
+    }
+
+    private const string IdentifierPattern = @"^[A-Za-z_][A-Za-z0-9_]*$";
+    private const string SessionKey = "Toolkit_SOManager_Target";
+    private const string EnumSessionKey = "Toolkit_SOManager_Enum";
+
     private static MonoScript targetScript;
     private static System.Type targetType;
 
@@ -20,25 +31,42 @@ public static class ToolkitSOManager
     // 一括変更用
     private static List<string> batchPaths = new List<string>();
     private static List<SerializedPropertyType> batchTypes = new List<SerializedPropertyType>();
+    private static List<string[]> batchEnumNames = new List<string[]>();   // enum以外は null
     private static string[] batchLabels = new string[0];
     private static int batchIndex = 0;
     private static float batchNumber = 0f;
     private static bool batchBool = false;
     private static string batchString = "";
+    private static int batchEnumIndex = 0;
 
     // 新規作成用
     private static string newName = "NewData";
     private static string targetFolder = "Assets";
 
-    private const string SessionKey = "Toolkit_SOManager_Target";
-
-    private static readonly string[] fieldTypeNames = { "int", "float", "bool", "string", "Vector2", "Vector3", "Color", "GameObject", "Sprite" };
+    // フィールド追加用
+    private static readonly string[] fieldTypeNames = { "int", "float", "bool", "string", "Vector2", "Vector3", "Color", "GameObject", "Sprite", "enum" };
     private static int newFieldTypeIndex = 0;
     private static string newFieldName = "";
     private static string newFieldDefault = "";
     private static bool showAddField = false;
     private static List<string> pendingLines = new List<string>();   // 書き込み待ちの宣言行
     private static List<string> pendingNames = new List<string>();   // 重複チェック用
+
+    // フィールドの型として選べるenum(プロジェクト内のpublicなもの)
+    private static string[] enumTypeNames = new string[0];
+    private static bool enumTypesLoaded = false;
+    private static int enumPopupIndex = 0;
+
+    // enumの作成・編集用(今のSOクラスの中にあるenum)
+    private static string newEnumName = "";
+    private static string newEnumValues = "";
+    private static List<System.Type> nestedEnums = new List<System.Type>();
+    private static string[] nestedEnumLabels = new string[0];
+    private static int nestedEnumIndex = 0;
+    private static List<EnumMember> enumMembers = new List<EnumMember>();
+    private static List<string> enumOriginalNames = new List<string>();
+    private static string loadedEnumName = null;
+    private static bool enumLoadQueued = false;
 
     public static void DrawMenu()
     {
@@ -101,6 +129,11 @@ public static class ToolkitSOManager
                 case SerializedPropertyType.Float: batchNumber = EditorGUILayout.FloatField("Value", batchNumber); break;
                 case SerializedPropertyType.Boolean: batchBool = EditorGUILayout.Toggle("Value", batchBool); break;
                 case SerializedPropertyType.String: batchString = EditorGUILayout.TextField("Value", batchString); break;
+                case SerializedPropertyType.Enum:
+                    string[] names = batchEnumNames[batchIndex];
+                    batchEnumIndex = Mathf.Clamp(batchEnumIndex, 0, names.Length - 1);
+                    batchEnumIndex = EditorGUILayout.Popup("Value", batchEnumIndex, names);
+                    break;
             }
 
             GUI.enabled = checkedCount > 0;
@@ -123,24 +156,43 @@ public static class ToolkitSOManager
             GUI.enabled = true;
         }
 
-        // 🌟 フィールド追加(クラスのソースに書き込む)
+        // 🌟 フィールド追加・enum(クラスのソースに書き込む)
         GUILayout.Space(6);
-        showAddField = EditorGUILayout.Foldout(showAddField, "フィールドを追加(クラスに書き込む)", true);
+        showAddField = EditorGUILayout.Foldout(showAddField, "フィールドを追加 / enumを編集(クラスに書き込む)", true);
         if (showAddField)
         {
+            if (!enumTypesLoaded) LoadEnumTypes();
+
             using (new EditorGUILayout.HorizontalScope())
             {
-                newFieldTypeIndex = EditorGUILayout.Popup(newFieldTypeIndex, fieldTypeNames, GUILayout.Width(90));
+                bool isEnum = fieldTypeNames[newFieldTypeIndex] == "enum";
+
+                newFieldTypeIndex = EditorGUILayout.Popup(newFieldTypeIndex, fieldTypeNames, GUILayout.Width(70));
                 newFieldName = EditorGUILayout.TextField(newFieldName);
 
-                GUI.enabled = newFieldTypeIndex <= 3;   // 初期値を書けるのは int / float / bool / string だけ
-                newFieldDefault = EditorGUILayout.TextField(newFieldDefault, GUILayout.Width(60));
-                GUI.enabled = true;
+                if (isEnum)
+                {
+                    if (enumTypeNames.Length == 0)
+                    {
+                        EditorGUILayout.LabelField("(enumなし)", EditorStyles.miniLabel, GUILayout.Width(110));
+                    }
+                    else
+                    {
+                        enumPopupIndex = Mathf.Clamp(enumPopupIndex, 0, enumTypeNames.Length - 1);
+                        enumPopupIndex = EditorGUILayout.Popup(enumPopupIndex, enumTypeNames, GUILayout.Width(110));
+                    }
+                }
+                else
+                {
+                    GUI.enabled = newFieldTypeIndex <= 3;   // 初期値を書けるのは int / float / bool / string だけ
+                    newFieldDefault = EditorGUILayout.TextField(newFieldDefault, GUILayout.Width(40));
+                    GUI.enabled = true;
+                }
 
-                if (GUILayout.Button("＋", GUILayout.Width(26)) && !string.IsNullOrWhiteSpace(newFieldName))
+                if (GUILayout.Button("＋", GUILayout.Width(24)) && !string.IsNullOrWhiteSpace(newFieldName))
                     EditorApplication.delayCall += QueueField;
             }
-            EditorGUILayout.LabelField("左から: 型 / 名前 / 初期値", EditorStyles.miniLabel);
+            EditorGUILayout.LabelField("左から: 型 / 名前 / 初期値(enumは種類を選択)", EditorStyles.miniLabel);
 
             for (int i = 0; i < pendingLines.Count; i++)
             {
@@ -163,7 +215,75 @@ public static class ToolkitSOManager
             if (GUILayout.Button($"📝 {pendingLines.Count}件をクラスに書き込む", GUILayout.Height(24)))
                 EditorApplication.delayCall += WriteFields;
             GUI.enabled = true;
+
+            DrawEnumSection();
         }
+    }
+
+    // 🌟 今のSOクラスの中のenumを、作る・編集する
+    private static void DrawEnumSection()
+    {
+        GUILayout.Space(6);
+        EditorGUILayout.LabelField($"{targetType.Name} の中のenum", EditorStyles.miniBoldLabel);
+
+        // ---- 新しいenumを作る(SOのスクリプトの中に書き込む) ----
+        newEnumName = EditorGUILayout.TextField("Enum名", newEnumName);
+        newEnumValues = EditorGUILayout.TextField("値(カンマ区切り)", newEnumValues);
+
+        GUI.enabled = !string.IsNullOrWhiteSpace(newEnumName) && !string.IsNullOrWhiteSpace(newEnumValues);
+        if (GUILayout.Button("🧾 enumを作成", GUILayout.Height(22)))
+            EditorApplication.delayCall += CreateEnum;
+        GUI.enabled = true;
+
+        // ---- 作ったenumを編集する ----
+        if (nestedEnums.Count == 0)
+        {
+            EditorGUILayout.LabelField("(このクラスの中にenumはまだありません)", EditorStyles.miniLabel);
+            return;
+        }
+
+        GUILayout.Space(4);
+        nestedEnumIndex = Mathf.Clamp(nestedEnumIndex, 0, nestedEnums.Count - 1);
+        nestedEnumIndex = EditorGUILayout.Popup("編集するenum", nestedEnumIndex, nestedEnumLabels);
+
+        // 選んだenumが変わったら、中身を読み込み直す
+        if (loadedEnumName != nestedEnums[nestedEnumIndex].Name && !enumLoadQueued)
+        {
+            enumLoadQueued = true;
+            EditorApplication.delayCall += LoadEnumMembers;
+        }
+
+        EditorGUILayout.HelpBox(
+            "名前を直して「書き込む」を押すと、enumの定義が書き換わります。各値の番号は固定なので、削除や名前の変更をしても、作ったアセットの値は変わりません。※enumの中のコメントは消えます。",
+            MessageType.None);
+
+        for (int i = 0; i < enumMembers.Count; i++)
+        {
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                enumMembers[i].name = EditorGUILayout.TextField(enumMembers[i].name);
+                EditorGUILayout.LabelField("= " + enumMembers[i].value + (enumMembers[i].isNew ? " 新" : ""), GUILayout.Width(60));
+
+                int idx = i;
+                if (GUILayout.Button("×", GUILayout.Width(22)))
+                {
+                    EditorApplication.delayCall += () =>
+                    {
+                        if (idx < enumMembers.Count) enumMembers.RemoveAt(idx);
+                        RepaintToolkit();
+                    };
+                }
+            }
+        }
+
+        using (new EditorGUILayout.HorizontalScope())
+        {
+            if (GUILayout.Button("＋ 値を追加")) EditorApplication.delayCall += AddEnumMember;
+            if (GUILayout.Button("↩ 元に戻す")) EditorApplication.delayCall += LoadEnumMembers;
+        }
+
+        if (GUILayout.Button("📝 enumに書き込む", GUILayout.Height(24)))
+            EditorApplication.delayCall += WriteEnumMembers;
     }
 
     private static void DrawRow(int i)
@@ -216,9 +336,17 @@ public static class ToolkitSOManager
         checks.Clear();
         expanded.Clear();
         batchPaths.Clear();
+        batchEnumNames.Clear();
         batchTypes.Clear();
         batchLabels = new string[0];
         batchIndex = 0;
+
+        nestedEnums.Clear();
+        nestedEnumLabels = new string[0];
+        enumMembers.Clear();
+        enumOriginalNames.Clear();
+        loadedEnumName = null;
+        enumLoadQueued = false;
 
         targetType = targetScript != null ? targetScript.GetClass() : null;
         if (targetType == null || !typeof(ScriptableObject).IsAssignableFrom(targetType))
@@ -246,10 +374,21 @@ public static class ToolkitSOManager
             BuildBatchFields(found[0]);
         }
 
+        // このクラスの中にあるenumを集める(編集の対象)
+        nestedEnums = targetType.GetNestedTypes(BindingFlags.Public | BindingFlags.NonPublic)
+            .Where(n => n.IsEnum)
+            .OrderBy(n => n.Name)
+            .ToList();
+        nestedEnumLabels = nestedEnums.Select(n => n.Name).ToArray();
+
+        string savedEnum = SessionState.GetString(EnumSessionKey, "");
+        int enumFound = nestedEnums.FindIndex(n => n.Name == savedEnum);
+        nestedEnumIndex = enumFound >= 0 ? enumFound : 0;
+
         RepaintToolkit();
     }
 
-    // 一括変更で選べるフィールド(int / float / bool / string のトップレベルのみ)
+    // 一括変更で選べるフィールド(int / float / bool / string / enum のトップレベルのみ)
     private static void BuildBatchFields(ScriptableObject sample)
     {
         List<string> labels = new List<string>();
@@ -263,10 +402,12 @@ public static class ToolkitSOManager
                 if (prop.name == "m_Script") continue;
                 SerializedPropertyType t = prop.propertyType;
                 if (t == SerializedPropertyType.Integer || t == SerializedPropertyType.Float ||
-                    t == SerializedPropertyType.Boolean || t == SerializedPropertyType.String)
+                    t == SerializedPropertyType.Boolean || t == SerializedPropertyType.String ||
+                    t == SerializedPropertyType.Enum)
                 {
                     batchPaths.Add(prop.propertyPath);
                     batchTypes.Add(t);
+                    batchEnumNames.Add(t == SerializedPropertyType.Enum ? prop.enumDisplayNames : null);
                     labels.Add(prop.displayName);
                 }
             } while (prop.NextVisible(false));
@@ -295,6 +436,7 @@ public static class ToolkitSOManager
                 case SerializedPropertyType.Float: prop.floatValue = batchNumber; break;
                 case SerializedPropertyType.Boolean: prop.boolValue = batchBool; break;
                 case SerializedPropertyType.String: prop.stringValue = batchString; break;
+                case SerializedPropertyType.Enum: prop.enumValueIndex = batchEnumIndex; break;
             }
             so.ApplyModifiedProperties();   // Undo(Ctrl+Z)にも記録される
         }
@@ -334,12 +476,15 @@ public static class ToolkitSOManager
     {
         if (EditorWindow.HasOpenInstances<Toolkit>()) EditorWindow.GetWindow<Toolkit>().Repaint();
     }
+
+    // ---------------- フィールド追加 ----------------
+
     private static void QueueField()
     {
         if (targetType == null) return;
 
         string name = newFieldName.Trim();
-        if (!Regex.IsMatch(name, @"^[A-Za-z_][A-Za-z0-9_]*$"))
+        if (!Regex.IsMatch(name, IdentifierPattern))
         {
             Debug.LogWarning("[Toolkit] フィールド名には英数字とアンダースコアだけ使えます(先頭は数字不可)。");
             return;
@@ -353,7 +498,18 @@ public static class ToolkitSOManager
             return;
         }
 
-        pendingLines.Add(BuildFieldLine(fieldTypeNames[newFieldTypeIndex], name, newFieldDefault));
+        string typeName = fieldTypeNames[newFieldTypeIndex];
+        if (typeName == "enum")
+        {
+            if (enumTypeNames.Length == 0)
+            {
+                Debug.LogWarning("[Toolkit] 使えるenumがありません。「enumを作成」で作ってください。");
+                return;
+            }
+            typeName = enumTypeNames[Mathf.Clamp(enumPopupIndex, 0, enumTypeNames.Length - 1)];
+        }
+
+        pendingLines.Add(BuildFieldLine(typeName, name, newFieldDefault));
         pendingNames.Add(name);
         newFieldName = "";
         newFieldDefault = "";
@@ -417,5 +573,203 @@ public static class ToolkitSOManager
         pendingLines.Clear();
         pendingNames.Clear();
         AssetDatabase.ImportAsset(path);   // ここで再コンパイルが走る
+    }
+
+    // フィールドの型として選べるenum(プロジェクト内のpublicなもの。クラスの中のenumも含む)
+    private static void LoadEnumTypes()
+    {
+        enumTypesLoaded = true;
+        enumTypeNames = System.AppDomain.CurrentDomain.GetAssemblies()
+            .Where(a => a.GetName().Name == "Assembly-CSharp")
+            .SelectMany(a =>
+            {
+                try { return a.GetTypes(); }
+                catch (ReflectionTypeLoadException e) { return e.Types.Where(t => t != null).ToArray(); }
+            })
+            .Where(t => t.IsEnum && (t.IsPublic || t.IsNestedPublic))
+            .Select(t => t.FullName.Replace('+', '.'))
+            .OrderBy(n => n)
+            .ToArray();
+    }
+
+    // ---------------- enumの作成・編集 ----------------
+
+    // 🌟 SOのスクリプトの中に、新しいenumを書き込む(各値に番号を付けて書く)
+    private static void CreateEnum()
+    {
+        if (targetScript == null || targetType == null) return;
+
+        string name = newEnumName.Trim();
+        if (!Regex.IsMatch(name, IdentifierPattern))
+        {
+            Debug.LogWarning("[Toolkit] enum名には英数字とアンダースコアだけ使えます。");
+            return;
+        }
+
+        // 重複チェック(同じ名前のenumが、このクラスの中にないか)
+        if (targetType.GetNestedType(name, BindingFlags.Public | BindingFlags.NonPublic) != null)
+        {
+            Debug.LogWarning($"[Toolkit] {name} という名前のenumは既に {targetType.Name} クラス内に存在します。");
+            return;
+        }
+
+        List<string> values = Regex.Split(newEnumValues, @"[,\s、]+")
+            .Where(v => v.Length > 0).Distinct().ToList();
+        if (values.Count == 0 || values.Any(v => !Regex.IsMatch(v, IdentifierPattern)))
+        {
+            Debug.LogWarning("[Toolkit] 値はカンマかスペース区切りで、英数字とアンダースコアだけ使えます。");
+            return;
+        }
+
+        string path = AssetDatabase.GetAssetPath(targetScript);
+        string text = File.ReadAllText(path);
+        string nl = text.Contains("\r\n") ? "\r\n" : "\n";
+
+        // クラス宣言から、最初の「{」までを探す (WriteFieldsと同じ仕組み)
+        Match m = Regex.Match(text, @"class\s+" + Regex.Escape(targetType.Name) + @"\b[^{]*\{");
+        if (!m.Success)
+        {
+            Debug.LogWarning($"[Toolkit] {targetType.Name} のクラス宣言が見つかりませんでした。");
+            return;
+        }
+
+        int lineStart = text.LastIndexOf('\n', m.Index) + 1;
+        string indent = Regex.Match(text.Substring(lineStart), @"^[ \t]*").Value + "    ";
+
+        // enumの文字列を組み立て(番号を明示して書くので、あとから削除・名前変更をしても他の値はずれない)
+        StringBuilder sb = new StringBuilder();
+        sb.Append(nl).Append(indent).Append("public enum ").Append(name);
+        sb.Append(nl).Append(indent).Append("{");
+        for (int i = 0; i < values.Count; i++)
+        {
+            sb.Append(nl).Append(indent).Append("    ").Append(values[i]).Append(" = ").Append(i).Append(",");
+        }
+        sb.Append(nl).Append(indent).Append("}");
+        sb.Append(nl);   // 改行を挟んで既存のフィールドと離す
+
+        // クラス宣言の「{」の直後に挿入
+        text = text.Insert(m.Index + m.Length, sb.ToString());
+        File.WriteAllText(path, text, Encoding.UTF8);
+
+        SessionState.SetString(EnumSessionKey, name);   // 再コンパイル後、作ったenumが選ばれた状態にする
+        newEnumName = "";
+        newEnumValues = "";
+        AssetDatabase.ImportAsset(path);   // 再コンパイルを実行
+    }
+
+    // 今のenumの中身(名前と番号)を、コンパイル済みの型から読む
+    private static void LoadEnumMembers()
+    {
+        enumLoadQueued = false;
+        enumMembers.Clear();
+        enumOriginalNames.Clear();
+
+        if (nestedEnums.Count == 0)
+        {
+            loadedEnumName = null;
+            return;
+        }
+
+        nestedEnumIndex = Mathf.Clamp(nestedEnumIndex, 0, nestedEnums.Count - 1);
+        System.Type enumType = nestedEnums[nestedEnumIndex];
+
+        foreach (string memberName in System.Enum.GetNames(enumType))
+        {
+            long value = System.Convert.ToInt64(System.Enum.Parse(enumType, memberName));
+            enumMembers.Add(new EnumMember { name = memberName, value = value });
+            enumOriginalNames.Add(memberName);
+        }
+
+        loadedEnumName = enumType.Name;
+        SessionState.SetString(EnumSessionKey, enumType.Name);
+        RepaintToolkit();
+    }
+
+    private static void AddEnumMember()
+    {
+        long next = enumMembers.Count > 0 ? enumMembers.Max(x => x.value) + 1 : 0;
+        enumMembers.Add(new EnumMember { name = "NewValue" + next, value = next, isNew = true });
+        RepaintToolkit();
+    }
+
+    // 🌟 enumの定義を、番号つきで書き換える
+    private static void WriteEnumMembers()
+    {
+        if (targetScript == null || nestedEnums.Count == 0) return;
+        System.Type enumType = nestedEnums[Mathf.Clamp(nestedEnumIndex, 0, nestedEnums.Count - 1)];
+
+        if (enumMembers.Count == 0)
+        {
+            Debug.LogWarning("[Toolkit] 値が1つもありません。");
+            return;
+        }
+        if (enumMembers.Any(x => !Regex.IsMatch(x.name ?? "", IdentifierPattern)))
+        {
+            Debug.LogWarning("[Toolkit] 値の名前には、英数字とアンダースコアだけ使えます(先頭は数字不可)。");
+            return;
+        }
+        if (enumMembers.GroupBy(x => x.name).Any(g => g.Count() > 1))
+        {
+            Debug.LogWarning("[Toolkit] 同じ名前の値があります。");
+            return;
+        }
+
+        // enumはSOのスクリプトの中にあるので、そのファイルだけを見ればよい
+        string path = AssetDatabase.GetAssetPath(targetScript);
+        string text = File.ReadAllText(path);
+
+        Match declaration = Regex.Match(text, @"\benum\s+" + Regex.Escape(enumType.Name) + @"\b[^{]*\{(?<body>[^}]*)\}");
+        if (!declaration.Success)
+        {
+            Debug.LogWarning($"[Toolkit] {enumType.Name} の定義が {Path.GetFileName(path)} の中に見つかりませんでした。");
+            return;
+        }
+
+        // 名前の変更・削除で無くなる値と、それを使っているコードを確認する
+        HashSet<string> newNames = new HashSet<string>(enumMembers.Select(x => x.name));
+        List<string> removed = enumOriginalNames.Where(n => !newNames.Contains(n)).ToList();
+        if (removed.Count > 0)
+        {
+            List<string> usedIn = FindEnumUsages(enumType.Name, removed);
+            string message = "次の値が、名前の変更または削除で無くなります:\n" + string.Join(", ", removed);
+            if (usedIn.Count > 0)
+                message += "\n\nコードで使われているファイル(書き込み後にエラーになります):\n" + string.Join("\n", usedIn.Take(8));
+
+            if (!EditorUtility.DisplayDialog("確認", message, "書き込む", "キャンセル")) return;
+        }
+
+        string nl = text.Contains("\r\n") ? "\r\n" : "\n";
+        int lineStart = text.LastIndexOf('\n', declaration.Index) + 1;
+        string declIndent = Regex.Match(text.Substring(lineStart), @"^[ \t]*").Value;
+        string memberIndent = declIndent + "    ";
+
+        StringBuilder sb = new StringBuilder();
+        sb.Append(nl);
+        foreach (EnumMember member in enumMembers.OrderBy(x => x.value))
+            sb.Append(memberIndent).Append(member.name).Append(" = ").Append(member.value).Append(',').Append(nl);
+        sb.Append(declIndent);
+
+        Group body = declaration.Groups["body"];
+        text = text.Substring(0, body.Index) + sb.ToString() + text.Substring(body.Index + body.Length);
+        File.WriteAllText(path, text, Encoding.UTF8);
+
+        SessionState.SetString(EnumSessionKey, enumType.Name);
+        AssetDatabase.ImportAsset(path);   // ここで再コンパイルが走る
+    }
+
+    // 消える名前を、コードのどこで使っているかを探す(例: TowerType.Arrow)
+    private static List<string> FindEnumUsages(string enumName, List<string> oldNames)
+    {
+        string alternatives = string.Join("|", oldNames.Select(Regex.Escape));
+        Regex usage = new Regex(@"\b" + Regex.Escape(enumName) + @"\s*\.\s*(" + alternatives + @")\b");
+
+        List<string> result = new List<string>();
+        foreach (string guid in AssetDatabase.FindAssets("t:MonoScript", new[] { "Assets" }))
+        {
+            string candidate = AssetDatabase.GUIDToAssetPath(guid);
+            if (!candidate.EndsWith(".cs")) continue;
+            if (usage.IsMatch(File.ReadAllText(candidate))) result.Add(candidate);
+        }
+        return result;
     }
 }
