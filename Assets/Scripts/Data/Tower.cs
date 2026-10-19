@@ -3,7 +3,8 @@
 [CreateAssetMenu(fileName = "Tower", menuName = "Data/Tower")]
 public class Tower : ScriptableObject
 {
-    public enum type
+    public Tower.TowerType towerType;
+    public enum TowerType
     {
         normal = 0,
         fire = 1,
