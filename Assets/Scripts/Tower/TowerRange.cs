@@ -1,17 +1,25 @@
-﻿using UnityEngine;
-using VContainer;
+﻿using System.Collections.Generic;
+using UnityEngine;
 
 public class TowerRange : MonoBehaviour
 {
     [SerializeField] private Tower data;
+    public List<GameObject> enemyList = new();
 
-    [Inject] private TowerAttack towerAttack;
     private void OnTriggerEnter(Collider other)
     {
         if (other.CompareTag("Enemy"))
         {
-            Debug.Log("敵が当たった！");
+            Debug.Log(other.gameObject + "が当たった！");
+            if (!enemyList.Contains(other.gameObject)) 
+            {
+                enemyList.Add(other.gameObject);
+            }
         }
+    }
+    private void OnTriggerExit(Collider other)
+    {
+        enemyList.Remove(other.gameObject);
     }
     /// <summary> 範囲円のデバッグ用 </summary>
     private void OnDrawGizmos()
